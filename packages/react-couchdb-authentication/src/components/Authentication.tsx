@@ -83,7 +83,7 @@ interface State {
     /**
      * Current authenticated user's name (used as part of it's document).
      */
-    name: string;
+    name: string | null;
   };
 }
 
@@ -236,25 +236,20 @@ export class Authentication extends React.Component<Props, State> {
     };
 
     try {
-      const response = await this.fetch<{
-        error?: string;
-        reason?: string;
-        ok?: boolean;
-      }>(this.props.url + "_users/" + userId, {
+      const response = await fetch(this.props.url + "_users/" + userId, {
         method: "PUT",
         body: JSON.stringify(user),
       });
-
-      if (response.error) {
-        //{error: "conflict", reason: "Document update conflict."}
-        this.setState({ error: response.reason });
+      if (!response.ok) {
+        this.setState({ error: response.statusText });
         return;
       }
-
+      /*
       if (!response.ok) {
         this.setState({ error: "An unknown error has occurred" });
+        return;
       }
-
+*/
       await this.checkForDb(username);
 
       await this.login(username, password);
@@ -303,27 +298,25 @@ export class Authentication extends React.Component<Props, State> {
     }).then((r) => r.json() as unknown as T);
   }
 
-  private async grabSession(): Promise<{ name: string }> {
+  private async grabSession(): Promise<{ name: string | null }> {
     // If we have a remoteDb, we'll use it. This works better in Safari which does
     // not support storing cross-origin cookies across multiple requests.
-    if (
-      this.#remoteDb &&
-      this.state &&
-      this.state.user &&
-      this.state.user.name
-    ) {
-      const user = await this.fetch(
-        `${this.props.url}/_users/org.couchdb.user:${this.state.user.name}`
-      ).catch((err) => this.error(err));
+    if (this.state && this.state.user && this.state.user.name) {
+      if (this.#remoteDb) {
+        const user = await this.fetch(
+          `${this.props.url}/_users/org.couchdb.user:${this.state.user.name}`
+        ).catch((err) => this.error(err));
 
-      return user as { name: string };
-    } else {
-      const session = await this.fetch<{
-        userCtx: { name: string };
-      }>(this.props.url + "_session");
+        return user as { name: string };
+      } else {
+        const session = await this.fetch<{
+          userCtx: { name: string | null };
+        }>(this.props.url + "_session");
 
-      return session.userCtx;
+        return session.userCtx;
+      }
     }
+    return { name: null };
   }
 
   private async checkSession(): Promise<void> {
@@ -359,6 +352,19 @@ export class Authentication extends React.Component<Props, State> {
         await this.fetch(this.props.url + "_session", {
           method: "DELETE",
         });
+
+        if (this.#checkSessionInterval) {
+          window.clearInterval(this.#checkSessionInterval);
+        }
+
+        // Will not be set if sync has been disabled
+        if (this.#syncHandler) {
+          this.#syncHandler.cancel();
+        }
+
+        if (this.#remoteDb) {
+          await this.#remoteDb.close();
+        }
 
         // Clear the user and redirect them to our login screen
         this.setState({
@@ -409,9 +415,9 @@ export class Authentication extends React.Component<Props, State> {
 
       const user = response as UserResponse;
 
-      this.setState({ authenticated: true, user });
-
-      this.setupDb(username, password);
+      this.setState({ authenticated: true, user }, () =>
+        this.setupDb(username, password)
+      );
     } catch (err) {
       this.setState({ authenticated: false, user: undefined });
       this.error(err);
